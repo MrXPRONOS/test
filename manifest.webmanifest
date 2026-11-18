@@ -1,0 +1,17 @@
+{
+  "id": "./",
+  "name": "GW Suivi — Greatness Winner",
+  "short_name": "GW Suivi",
+  "description": "Employés, tâches, échéances et primes de performance",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f7fb",
+  "theme_color": "#172d4b",
+  "orientation": "any",
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

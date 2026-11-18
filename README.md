@@ -2,6 +2,12 @@
 
 Application PWA de gestion des employés, tâches, délais et primes de performance.
 
+## Accès public
+
+Application : **https://gw-suivi.pages.dev** (Cloudflare Pages, domaine dédié à GW Suivi).
+
+La base D1 `gw-suivi-production` reste séparée des autres applications. L'ancien accès workers.dev a été remplacé par l'adresse ci-dessus.
+
 ## Infrastructure
 
 - GitHub : code source et versions.

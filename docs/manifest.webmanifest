@@ -1,0 +1,18 @@
+{
+  "name": "RETRO FOOT 3D — CR GAME",
+  "short_name": "RETRO FOOT",
+  "description": "Football arcade rétro 3D",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#060e16",
+  "theme_color": "#0d2430",
+  "icons": [
+    {
+      "src": "assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

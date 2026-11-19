@@ -36,3 +36,9 @@ L'application PWA exige HTTP sur `localhost` ou HTTPS sur Internet. Mode product
 ## V1.2 : Espace Super administrateur
 
 Premier compte : activation propriétaire avec le code initial privé. Il reçoit le rôle `superadmin` et une page de supervision dédiée. Il peut inviter les responsables par des codes à usage unique valables 7 jours, désactiver ou réactiver les accès, voir les erreurs enregistrées par le serveur et consulter l'état de D1. Chaque responsable possède son propre compte `admin` permettant d'organiser employés, missions et primes. Un employé conserve son espace personnel. Toutes les autorisations sont contrôlées dans le Worker (aucun accès Super admin avec un simple changement d'interface). La migration D1 est dans `cloudflare/migration-v1.2.sql`. Le bundle Cloudflare Pages Advanced Mode est généré avec `python3 cloudflare/build-bundle.py`.
+
+## Correctif V1.2.1 : inscription Cloudflare
+
+Cloudflare Workers WebCrypto limite les derivations PBKDF2 a **100 000 iterations par appel**. L'ancienne valeur 160 000 provoquait une erreur serveur pendant l'inscription, et n'avait pas ete detectee par les tests Node locaux. L'inscription utilise desormais PBKDF2-SHA256 avec 100 000 iterations, sel aleatoire unique et mots de passe d'au moins 12 caracteres. Le nombre d'iterations est enregistre avec chaque compte et valide contre la limite du runtime.
+
+Le test `node test-v12.mjs` verifie l'inscription et la valeur sauvegardee dans la base simulee. La base de production n'a besoin d'aucune migration supplementaire ; aucun compte n'existait avant ce correctif.

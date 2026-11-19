@@ -2,12 +2,6 @@
 
 Application PWA de gestion des employés, tâches, délais et primes de performance.
 
-## Accès public
-
-Application : **https://gw-suivi.pages.dev** (Cloudflare Pages, domaine dédié à GW Suivi).
-
-La base D1 `gw-suivi-production` reste séparée des autres applications. L'ancien accès workers.dev a été remplacé par l'adresse ci-dessus.
-
 ## Infrastructure
 
 - GitHub : code source et versions.
@@ -38,3 +32,7 @@ Le déploiement Cloudflare peut être connecté au dépôt GitHub via le tableau
 ## Tester
 
 L'application PWA exige HTTP sur `localhost` ou HTTPS sur Internet. Mode production activé dans `config.js`. Le script `TESTS-simulation.cjs` teste le parcours logique de démonstration en simulant un contexte navigateur, sans valider à lui seul la sécurité et la synchronisation serveur.
+
+## V1.2 : Espace Super administrateur
+
+Premier compte : activation propriétaire avec le code initial privé. Il reçoit le rôle `superadmin` et une page de supervision dédiée. Il peut inviter les responsables par des codes à usage unique valables 7 jours, désactiver ou réactiver les accès, voir les erreurs enregistrées par le serveur et consulter l'état de D1. Chaque responsable possède son propre compte `admin` permettant d'organiser employés, missions et primes. Un employé conserve son espace personnel. Toutes les autorisations sont contrôlées dans le Worker (aucun accès Super admin avec un simple changement d'interface). La migration D1 est dans `cloudflare/migration-v1.2.sql`. Le bundle Cloudflare Pages Advanced Mode est généré avec `python3 cloudflare/build-bundle.py`.

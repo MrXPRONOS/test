@@ -5,6 +5,7 @@ mimes={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js'
 a={}
 for f in ('index.html','styles.css','app.js','config.js','sw.js','manifest.webmanifest','icons/icon-192.png','icons/icon-512.png'):
  p=root/f;a['/'+f]=[mimes[p.suffix],base64.b64encode(p.read_bytes()).decode()]
+(root/'cloudflare/asset-bundle.js').write_text('export const ASSETS = '+json.dumps(a,separators=(',',':'))+';\n')
 worker=(root/'cloudflare/worker.js').read_text().split('\n',1)[1]
 compiled='const ASSETS = '+json.dumps(a,separators=(',',':'))+';\n'+worker
 (root/'cloudflare/worker-bundled.js').write_text(compiled)

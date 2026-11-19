@@ -6,3 +6,16 @@
 
 .superhero{border-radius:20px;background:linear-gradient(125deg,#122c50,#365383);color:white;padding:28px;margin:16px 0 22px}.superhero strong{font-size:11px;letter-spacing:1.3px;color:#ffb971}.superhero h2{color:#fff;margin:12px 0 8px}.superhero p{font-size:13px;color:#d9e2f6}
 @media(max-width:600px){.superhero{padding:20px}#super-invite-form{grid-template-columns:1fr!important}}
+
+/* GW Suivi V1.3 : invitations WhatsApp et e-mail */
+.contact-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:15px;margin-top:18px;align-items:end}
+.contact-form .field:first-child{grid-column:1/-1}
+.contact-form .full{grid-column:1/-1}
+.help-text{font-size:12px;color:#78869b;line-height:1.6;margin:3px 0 5px}
+.invite-card{border:1px solid #bed7ef;background:linear-gradient(145deg,#f0f7ff,#ffffff);border-radius:15px;padding:19px;margin:18px 0;min-width:0}
+.invite-card strong{display:block;font-size:14px;color:#183a5b;margin-bottom:7px}
+.invite-card p{font-size:12px;line-height:1.65;color:#667b90;margin:0 0 10px}
+.invite-link{background:white;border:1px dashed #bed0e8;border-radius:10px;padding:11px 12px;color:#2b5783;overflow-wrap:anywhere;font-size:11px;font-weight:700;user-select:all}
+.invite-actions{display:flex;gap:9px;flex-wrap:wrap;margin:15px 0 10px}
+.invite-card small{display:block;font-size:11px;color:#6f8091;line-height:1.5}
+@media(max-width:650px){.contact-form{grid-template-columns:1fr}.contact-form .field:first-child,.contact-form .full{grid-column:auto}.invite-actions .btn{width:100%;white-space:normal}.invite-card{padding:15px}.settings-row{gap:10px}}

@@ -8,7 +8,9 @@ const uuid = () => crypto.randomUUID();
 const hex = (buf) => [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
 const unhex = (str) => new Uint8Array(str.match(/.{2}/g).map(x=>parseInt(x,16)));
 async function digest(value){return hex(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)));}
-async function hashPassword(password,salt,iterations=160000){const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(password),'PBKDF2',false,['deriveBits']);return hex(await crypto.subtle.deriveBits({name:'PBKDF2',salt:unhex(salt),iterations,hash:'SHA-256'},key,256));}
+const PBKDF2_ITERATIONS = 100000; // Workers WebCrypto refuses iteration counts above 100,000.
+async function hashPassword(password,salt,iterations=PBKDF2_ITERATIONS){
+ if(!Number.isSafeInteger(iterations) || iterations<1 || iterations>100000) throw new Error('PBKDF2 iteration limit');const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(password),'PBKDF2',false,['deriveBits']);return hex(await crypto.subtle.deriveBits({name:'PBKDF2',salt:unhex(salt),iterations,hash:'SHA-256'},key,256));}
 function safeText(v,max=3000){return String(v??'').trim().slice(0,max);}
 function validEmail(s){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) && s.length <=250;}
 function dateISO(value){const n=Date.parse(value); if(!Number.isFinite(n))throw new Error('Date invalide');return new Date(n).toISOString();}
@@ -24,7 +26,7 @@ async function register(db,req){
  if(!owner){const setting=await db.prepare("SELECT value FROM settings WHERE key='setup_code_hash'").first();const code=safeText(b.bootstrapCode,120);if(!setting||!code||await digest(code)!==setting.value)return fail('Code Super admin incorrect.',403);role='superadmin';}
  else if(b.adminInviteCode){const codeHash=await digest(safeText(b.adminInviteCode,120));invite=await db.prepare('SELECT * FROM admin_invites WHERE email=? AND code_hash=? AND consumed_at IS NULL AND expires_at>?').bind(email,codeHash,nowSec()).first();if(!invite)return fail('Invitation responsable invalide ou expirée.',403);role='admin';}
  else {person=await db.prepare("SELECT * FROM people WHERE email=? AND active=1 AND role='employee' AND user_id IS NULL").bind(email).first();if(!person||!person.invite_code||safeText(b.inviteCode,100)!==person.invite_code)return fail('Invitation employé invalide.',403);role='employee';}
- const id=uuid(),stamp=now(),salt=hex(crypto.getRandomValues(new Uint8Array(16))),iterations=160000,hash=await hashPassword(password,salt,iterations);
+ const id=uuid(),stamp=now(),salt=hex(crypto.getRandomValues(new Uint8Array(16))),iterations=PBKDF2_ITERATIONS,hash=await hashPassword(password,salt,iterations);
  const stmts=[db.prepare('INSERT INTO accounts(id,email,password_hash,salt,iterations) VALUES(?,?,?,?,?)').bind(id,email,hash,salt,iterations)];
  if(role==='superadmin'){stmts.push(db.prepare('INSERT INTO people(id,user_id,name,email,role,is_superadmin,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').bind(uuid(),id,safeText(b.name,100)||'Propriétaire GW',email,'admin',1,1,stamp,stamp));stmts.push(db.prepare("DELETE FROM settings WHERE key='setup_code_hash'"));}
  else if(role==='admin'){stmts.push(db.prepare('INSERT INTO people(id,user_id,name,email,role,is_superadmin,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').bind(uuid(),id,invite.name,email,'admin',0,1,stamp,stamp));stmts.push(db.prepare('UPDATE admin_invites SET consumed_at=? WHERE id=? AND consumed_at IS NULL').bind(stamp,invite.id));}

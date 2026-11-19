@@ -13,37 +13,144 @@ async function hashPassword(password,salt,iterations=PBKDF2_ITERATIONS){
  if(!Number.isSafeInteger(iterations) || iterations<1 || iterations>100000) throw new Error('PBKDF2 iteration limit');const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(password),'PBKDF2',false,['deriveBits']);return hex(await crypto.subtle.deriveBits({name:'PBKDF2',salt:unhex(salt),iterations,hash:'SHA-256'},key,256));}
 function safeText(v,max=3000){return String(v??'').trim().slice(0,max);}
 function validEmail(s){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) && s.length <=250;}
+// Le schéma historique impose une adresse non nulle. Les utilisateurs « téléphone seul »
+// reçoivent un identifiant interne non distribuable, jamais exposé comme contact réel.
+const PHONE_DOMAIN='gw-suivi.invalid';
+const internalEmail=phone=>'phone-'+phone.replace(/\D/g,'')+'@'+PHONE_DOMAIN;
+const publicEmail=email=>(String(email||'').endsWith('@'+PHONE_DOMAIN)?'':String(email||''));
+function normalizePhone(value){
+ let raw=String(value||'').trim().replace(/[\s.()\-]/g,'');
+ if(!raw)return '';
+ if(raw.startsWith('00'))raw='+'+raw.slice(2);
+ if(/^\d{8}$/.test(raw))raw='+228'+raw;
+ else if(/^\d{11,15}$/.test(raw))raw='+'+raw;
+ if(!/^\+[1-9]\d{7,14}$/.test(raw))throw new Error('Numéro de téléphone invalide : indique +228XXXXXXXX ou le code pays.');
+ return raw;
+}
+function contacts(obj){
+ const originalEmail=safeText(obj.email,250).toLowerCase(),email=originalEmail||'';
+ const phone=normalizePhone(obj.phone);
+ if(email&&(!validEmail(email)||email.endsWith('@'+PHONE_DOMAIN)))throw new Error('Adresse e-mail invalide.');
+ if(!email&&!phone)throw new Error('Indique une adresse e-mail et/ou un numéro WhatsApp.');
+ return {email:email||internalEmail(phone),phone,displayEmail:email};
+}
+function publicPerson(p){return {...p,email:publicEmail(p.email),phone:p.phone||''};}
+const INVITE_DAYS=7*86400;
+const invitationURL=token=>'https://gw-suivi.pages.dev/#invite='+encodeURIComponent(token);
+const newToken=()=>hex(crypto.getRandomValues(new Uint8Array(24)));
+function inviteResult(token,person,role){return {ok:true,link:invitationURL(token),role,name:person.name,email:publicEmail(person.email),phone:person.phone||'',expires_at:nowSec()+INVITE_DAYS};}
+async function checkContactsUnique(db,c,excludePerson=''){
+ const emails=await db.prepare('SELECT id FROM people WHERE email=? AND id<>?').bind(c.email,excludePerson).first();
+ if(emails)return 'Adresse e-mail déjà utilisée.';
+ if(c.phone){const phones=await db.prepare('SELECT id FROM people WHERE phone=? AND id<>?').bind(c.phone,excludePerson).first();if(phones)return 'Numéro déjà utilisé.';}
+ const account=await db.prepare('SELECT id FROM accounts WHERE email=? OR (phone IS NOT NULL AND phone=?)').bind(c.email,c.phone||'').first();
+ if(account)return 'Un compte existe déjà avec ces coordonnées.';
+ return '';
+}
+
 function dateISO(value){const n=Date.parse(value); if(!Number.isFinite(n))throw new Error('Date invalide');return new Date(n).toISOString();}
 function validateTask(t){const title=safeText(t.title,130),desc=safeText(t.description,3000),employee_id=String(t.employee_id||'');const due_at=dateISO(t.due_at),bonus_before=dateISO(t.bonus_before||t.due_at);const priority=['low','normal','high'].includes(t.priority)?t.priority:'normal';const bonus_amount=Number(t.bonus_amount||0);if(!title||!employee_id||bonus_before>due_at||!Number.isInteger(bonus_amount)||bonus_amount<0||bonus_amount>100000000)throw new Error('Informations de tâche invalides');return {title,description:desc,employee_id,due_at,bonus_before,priority,bonus_amount};}
 async function readBody(request){const size=Number(request.headers.get('content-length')||0);if(size>30000)throw new Error('Requête trop volumineuse');const t=await request.text();if(t.length>30000)throw new Error('Requête trop volumineuse');return JSON.parse(t||'{}');}
-async function auth(req,db){const raw=(req.headers.get('authorization')||'').match(/^Bearer ([a-zA-Z0-9_-]{30,})$/)?.[1];if(!raw)return null;const token_hash=await digest(raw);return await db.prepare(`SELECT a.id AS user_id, a.email AS email, p.id AS person_id, CASE WHEN p.is_superadmin=1 THEN 'superadmin' ELSE p.role END AS role, p.name AS name FROM sessions s JOIN accounts a ON a.id=s.user_id JOIN people p ON p.user_id=a.id WHERE s.token_hash=? AND s.expires_at>? AND p.active=1`).bind(token_hash,nowSec()).first();}
-async function makeSession(db,user){const raw=hex(crypto.getRandomValues(new Uint8Array(32)));const exp=nowSec()+14*86400;await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(await digest(raw),user.id,exp).run();return {access_token:raw,expires_at:exp,user:{id:user.id,email:user.email}};}
-async function register(db,req){
- const b=await readBody(req),email=safeText(b.email,250).toLowerCase(),password=String(b.password||'');
- if(!validEmail(email)||password.length<12||password.length>128)return fail('E-mail invalide ou mot de passe trop court (12 caractères minimum).');
- if(await db.prepare('SELECT id FROM accounts WHERE email=?').bind(email).first())return fail('Ce compte existe déjà.',409);
- const owner=await db.prepare('SELECT id FROM people WHERE is_superadmin=1 LIMIT 1').first();let role,person,invite;
- if(!owner){const setting=await db.prepare("SELECT value FROM settings WHERE key='setup_code_hash'").first();const code=safeText(b.bootstrapCode,120);if(!setting||!code||await digest(code)!==setting.value)return fail('Code Super admin incorrect.',403);role='superadmin';}
- else if(b.adminInviteCode){const codeHash=await digest(safeText(b.adminInviteCode,120));invite=await db.prepare('SELECT * FROM admin_invites WHERE email=? AND code_hash=? AND consumed_at IS NULL AND expires_at>?').bind(email,codeHash,nowSec()).first();if(!invite)return fail('Invitation responsable invalide ou expirée.',403);role='admin';}
- else {person=await db.prepare("SELECT * FROM people WHERE email=? AND active=1 AND role='employee' AND user_id IS NULL").bind(email).first();if(!person||!person.invite_code||safeText(b.inviteCode,100)!==person.invite_code)return fail('Invitation employé invalide.',403);role='employee';}
- const id=uuid(),stamp=now(),salt=hex(crypto.getRandomValues(new Uint8Array(16))),iterations=PBKDF2_ITERATIONS,hash=await hashPassword(password,salt,iterations);
- const stmts=[db.prepare('INSERT INTO accounts(id,email,password_hash,salt,iterations) VALUES(?,?,?,?,?)').bind(id,email,hash,salt,iterations)];
- if(role==='superadmin'){stmts.push(db.prepare('INSERT INTO people(id,user_id,name,email,role,is_superadmin,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').bind(uuid(),id,safeText(b.name,100)||'Propriétaire GW',email,'admin',1,1,stamp,stamp));stmts.push(db.prepare("DELETE FROM settings WHERE key='setup_code_hash'"));}
- else if(role==='admin'){stmts.push(db.prepare('INSERT INTO people(id,user_id,name,email,role,is_superadmin,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').bind(uuid(),id,invite.name,email,'admin',0,1,stamp,stamp));stmts.push(db.prepare('UPDATE admin_invites SET consumed_at=? WHERE id=? AND consumed_at IS NULL').bind(stamp,invite.id));}
- else stmts.push(db.prepare('UPDATE people SET user_id=?,invite_code=NULL,updated_at=? WHERE id=? AND user_id IS NULL').bind(id,stamp,person.id));
- await db.batch(stmts);return json({success:true},201);
+async function auth(req,db){const raw=(req.headers.get('authorization')||'').match(/^Bearer ([a-zA-Z0-9_-]{30,})$/)?.[1];if(!raw)return null;const token_hash=await digest(raw);return await db.prepare(`SELECT a.id AS user_id, a.email AS email, a.phone AS phone, p.id AS person_id, CASE WHEN p.is_superadmin=1 THEN 'superadmin' ELSE p.role END AS role, p.name AS name FROM sessions s JOIN accounts a ON a.id=s.user_id JOIN people p ON p.user_id=a.id WHERE s.token_hash=? AND s.expires_at>? AND p.active=1`).bind(token_hash,nowSec()).first();}
+async function makeSession(db,user){const raw=hex(crypto.getRandomValues(new Uint8Array(32)));const exp=nowSec()+14*86400;await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(await digest(raw),user.id,exp).run();return {access_token:raw,expires_at:exp,user:{id:user.id,email:publicEmail(user.email),phone:user.phone||''}};}
+async function invitePreview(db,req){
+ const b=await readBody(req),token=safeText(b.token,180);
+ if(!/^[a-f0-9]{48}$/.test(token))return fail('Lien d’activation invalide.',400);
+ const hash=await digest(token);
+ const a=await db.prepare('SELECT id,name,email,phone,expires_at FROM admin_invites WHERE code_hash=? AND consumed_at IS NULL AND expires_at>?').bind(hash,nowSec()).first();
+ if(a)return json({role:'admin',name:a.name,email:publicEmail(a.email),phone:a.phone||'',expires_at:a.expires_at});
+ const p=await db.prepare("SELECT id,name,email,phone,invite_expires_at AS expires_at FROM people WHERE role='employee' AND active=1 AND user_id IS NULL AND invite_code_hash=? AND invite_expires_at>?").bind(hash,nowSec()).first();
+ if(p)return json({role:'employee',name:p.name,email:publicEmail(p.email),phone:p.phone||'',expires_at:p.expires_at});
+ return fail('Invitation expirée ou déjà utilisée. Demande un nouveau lien.',404);
 }
-async function login(db,req){const b=await readBody(req);const email=safeText(b.email,250).toLowerCase();const password=String(b.password||'');if(!validEmail(email)||!password)return fail('Identifiants incorrects.',401);
- const failures=await db.prepare('SELECT count(*) AS n FROM login_failures WHERE email=? AND occurred_at>?').bind(email,nowSec()-900).first();if(failures?.n>=7)return fail('Trop de tentatives. Réessaie dans 15 minutes.',429);
- const u=await db.prepare('SELECT * FROM accounts WHERE email=?').bind(email).first();let ok=false;
+async function register(db,req){
+ const b=await readBody(req),password=String(b.password||'');
+ if(password.length<12||password.length>128)return fail('Le mot de passe doit contenir 12 à 128 caractères.');
+ const owner=await db.prepare('SELECT id FROM people WHERE is_superadmin=1 LIMIT 1').first();
+ let role,person,invite,contact;
+ if(!owner){
+  const setting=await db.prepare("SELECT value FROM settings WHERE key='setup_code_hash'").first();
+  const code=safeText(b.bootstrapCode,120);
+  if(!setting||!code||await digest(code)!==setting.value)return fail('Code Super administrateur incorrect.',403);
+  contact=contacts(b);role='superadmin';
+ }else if(b.inviteToken){
+  const token=safeText(b.inviteToken,180);
+  if(!/^[a-f0-9]{48}$/.test(token))return fail('Invitation invalide.',403);
+  const hashed=await digest(token);
+  invite=await db.prepare('SELECT * FROM admin_invites WHERE code_hash=? AND consumed_at IS NULL AND expires_at>?').bind(hashed,nowSec()).first();
+  if(invite){role='admin';contact={email:invite.email,phone:invite.phone||''};}
+  else{
+   person=await db.prepare("SELECT * FROM people WHERE role='employee' AND active=1 AND user_id IS NULL AND invite_code_hash=? AND invite_expires_at>?").bind(hashed,nowSec()).first();
+   if(!person)return fail('Invitation expirée ou déjà utilisée.',403);
+   role='employee';contact={email:person.email,phone:person.phone||''};
+  }
+ }else if(b.adminInviteCode){
+  const email=safeText(b.email,250).toLowerCase();
+  const codeHash=await digest(safeText(b.adminInviteCode,120));
+  invite=await db.prepare('SELECT * FROM admin_invites WHERE email=? AND code_hash=? AND consumed_at IS NULL AND expires_at>?').bind(email,codeHash,nowSec()).first();
+  if(!invite)return fail('Invitation responsable invalide ou expirée.',403);
+  role='admin';contact={email:invite.email,phone:invite.phone||''};
+ }else{
+  const email=safeText(b.email,250).toLowerCase();
+  person=await db.prepare("SELECT * FROM people WHERE email=? AND active=1 AND role='employee' AND user_id IS NULL").bind(email).first();
+  if(!person||!person.invite_code||safeText(b.inviteCode,100)!==person.invite_code)return fail('Invitation employé invalide.',403);
+  role='employee';contact={email:person.email,phone:person.phone||''};
+ }
+ if(await db.prepare('SELECT id FROM accounts WHERE email=? OR (phone IS NOT NULL AND phone=?)').bind(contact.email,contact.phone||'').first())return fail('Ce compte existe déjà.',409);
+ const id=uuid(),stamp=now(),salt=hex(crypto.getRandomValues(new Uint8Array(16))),iterations=PBKDF2_ITERATIONS,hash=await hashPassword(password,salt,iterations);
+ const stmts=[db.prepare('INSERT INTO accounts(id,email,phone,password_hash,salt,iterations) VALUES(?,?,?,?,?,?)').bind(id,contact.email,contact.phone||null,hash,salt,iterations)];
+ if(role==='superadmin'){
+  stmts.push(db.prepare('INSERT INTO people(id,user_id,name,email,phone,role,is_superadmin,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(uuid(),id,safeText(b.name,100)||'Propriétaire GW',contact.email,contact.phone||null,'admin',1,1,stamp,stamp));
+  stmts.push(db.prepare("DELETE FROM settings WHERE key='setup_code_hash'"));
+ }else if(role==='admin'){
+  stmts.push(db.prepare('INSERT INTO people(id,user_id,name,email,phone,role,is_superadmin,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(uuid(),id,invite.name,contact.email,contact.phone||null,'admin',0,1,stamp,stamp));
+  stmts.push(db.prepare('UPDATE admin_invites SET consumed_at=? WHERE id=? AND consumed_at IS NULL').bind(stamp,invite.id));
+ }else{
+  stmts.push(db.prepare('UPDATE people SET user_id=?,invite_code=NULL,invite_code_hash=NULL,invite_expires_at=NULL,updated_at=? WHERE id=? AND user_id IS NULL').bind(id,stamp,person.id));
+ }
+ await db.batch(stmts);
+ return json({success:true},201);
+}
+async function login(db,req){
+ const b=await readBody(req),identifier=safeText(b.identifier||b.email||b.phone,250).toLowerCase(),password=String(b.password||'');
+ if(!identifier||!password)return fail('Identifiants incorrects.',401);
+ let phone='';if(!identifier.includes('@')){try{phone=normalizePhone(identifier);}catch{return fail('Identifiants incorrects.',401);}}
+ else if(!validEmail(identifier))return fail('Identifiants incorrects.',401);
+ const key=phone||identifier;
+ const failures=await db.prepare('SELECT count(*) AS n FROM login_failures WHERE email=? AND occurred_at>?').bind(key,nowSec()-900).first();
+ if(failures?.n>=7)return fail('Trop de tentatives. Réessaie dans 15 minutes.',429);
+ const u=await db.prepare('SELECT * FROM accounts WHERE email=? OR (phone IS NOT NULL AND phone=?)').bind(phone?internalEmail(phone):identifier,phone||'').first();
+ let ok=false;
  if(u){const hashed=await hashPassword(password,u.salt,u.iterations);ok=hashed===u.password_hash;}
- if(!ok){await db.prepare('INSERT INTO login_failures(email,occurred_at) VALUES(?,?)').bind(email,nowSec()).run();return fail('Identifiants incorrects.',401);}
+ if(!ok){await db.prepare('INSERT INTO login_failures(email,occurred_at) VALUES(?,?)').bind(key,nowSec()).run();return fail('Identifiants incorrects.',401);}
  const p=await db.prepare('SELECT id FROM people WHERE user_id=? AND active=1').bind(u.id).first();if(!p)return fail('Compte désactivé.',403);
- await db.prepare('DELETE FROM login_failures WHERE email=?').bind(email).run();return json(await makeSession(db,u));}
-async function snapshot(db,user){let people,tasks;if(user.role==='admin'){people=(await db.prepare('SELECT id,user_id,name,email,role,invite_code,active,created_at,updated_at FROM people WHERE is_superadmin=0 ORDER BY name').all()).results;tasks=(await db.prepare('SELECT * FROM tasks ORDER BY due_at').all()).results;}else{people=(await db.prepare("SELECT id,user_id,name,email,CASE WHEN is_superadmin=1 THEN 'superadmin' ELSE role END AS role,active,created_at,updated_at FROM people WHERE id=?").bind(user.person_id).all()).results;tasks=(await db.prepare('SELECT * FROM tasks WHERE employee_id=? ORDER BY due_at').bind(user.person_id).all()).results;}return json({people,tasks});}
+ await db.prepare('DELETE FROM login_failures WHERE email=?').bind(key).run();return json(await makeSession(db,u));
+}
+async function snapshot(db,user){
+ let people,tasks;
+ if(user.role==='admin'){
+  people=(await db.prepare('SELECT id,user_id,name,email,phone,role,invite_code,active,created_at,updated_at FROM people WHERE is_superadmin=0 ORDER BY name').all()).results;
+  tasks=(await db.prepare('SELECT * FROM tasks ORDER BY due_at').all()).results;
+ }else{
+  people=(await db.prepare("SELECT id,user_id,name,email,phone,CASE WHEN is_superadmin=1 THEN 'superadmin' ELSE role END AS role,active,created_at,updated_at FROM people WHERE id=?").bind(user.person_id).all()).results;
+  tasks=(await db.prepare('SELECT * FROM tasks WHERE employee_id=? ORDER BY due_at').bind(user.person_id).all()).results;
+ }
+ return json({people:people.map(publicPerson),tasks});
+}
 async function operate(db,user,req){const b=await readBody(req),op=b.op||{},type=op.type;const admin=user.role==='admin';const stamp=now();
  if(type==='person_upsert'){
-  if(!admin)return fail('Administrateur requis.',403);const p=op.person||{};const id=String(p.id||''),name=safeText(p.name,100),email=safeText(p.email,250).toLowerCase();if(!id||!name||!validEmail(email))return fail('Employé invalide.');const old=await db.prepare('SELECT id FROM people WHERE id=? OR email=?').bind(id,email).first();if(old)return old.id===id?json({ok:true}):fail('Adresse déjà enregistrée.',409);const invite_code=hex(crypto.getRandomValues(new Uint8Array(9))).toUpperCase();await db.prepare('INSERT INTO people(id,name,email,role,active,invite_code,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)').bind(id,name,email,'employee',1,invite_code,stamp,stamp).run();return json({ok:true});}
+  if(!admin)return fail('Administrateur requis.',403);
+  const p=op.person||{},id=String(p.id||''),name=safeText(p.name,100);
+  if(!id||!name)return fail('Nom de l’employé requis.');
+  const old=await db.prepare('SELECT id,user_id FROM people WHERE id=?').bind(id).first();
+  if(old)return json({ok:true,existing:true});
+  const contact=contacts(p);const duplicate=await checkContactsUnique(db,contact);
+  if(duplicate)return fail(duplicate,409);
+  const token=newToken(),expires=nowSec()+INVITE_DAYS;
+  await db.prepare('INSERT INTO people(id,name,email,phone,role,active,invite_code,invite_code_hash,invite_expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+   .bind(id,name,contact.email,contact.phone||null,'employee',1,null,await digest(token),expires,stamp,stamp).run();
+  return json(inviteResult(token,{...contact,name},'employee'),201);
+ }
  if(type==='task_upsert'){
   if(!admin)return fail('Administrateur requis.',403);const t=op.task||{};const id=String(t.id||'');if(!id)return fail('Identifiant manquant.');const old=await db.prepare('SELECT id FROM tasks WHERE id=?').bind(id).first();if(old)return json({ok:true});const v=validateTask(t);const person=await db.prepare("SELECT id FROM people WHERE id=? AND role='employee' AND active=1").bind(v.employee_id).first();if(!person)return fail('Employé introuvable.',404);await db.prepare(`INSERT INTO tasks(id,title,description,employee_id,due_at,priority,bonus_amount,bonus_before,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`).bind(id,v.title,v.description,v.employee_id,v.due_at,v.priority,v.bonus_amount,v.bonus_before,'todo',stamp,stamp).run();return json({ok:true});}
  if(type==='task_patch'){
@@ -65,9 +172,33 @@ async function operate(db,user,req){const b=await readBody(req),op=b.op||{},type
   let clientTime=null;try{clientTime=dateISO(op.clientTime);}catch{};await db.prepare("UPDATE tasks SET status='submitted',submitted_at=?,client_submitted_at=?,employee_note=?,updated_at=? WHERE id=? AND status IN ('todo','in_progress','changes_requested')").bind(stamp,clientTime,note,stamp,id).run();return json({ok:true});}
  return fail('Opération inconnue.',400);
 }
+async function reinviteEmployee(db,req){
+ const b=await readBody(req),id=safeText(b.id,100),p=await db.prepare("SELECT * FROM people WHERE id=? AND role='employee' AND active=1").bind(id).first();
+ if(!p)return fail('Employé introuvable.',404);
+ if(p.user_id)return fail('Ce collaborateur possède déjà un compte.',409);
+ const token=newToken();await db.prepare('UPDATE people SET invite_code=NULL,invite_code_hash=?,invite_expires_at=?,updated_at=? WHERE id=?').bind(await digest(token),nowSec()+INVITE_DAYS,now(),id).run();
+ await logEvent(db,'audit','Invitation employé renouvelée');
+ return json(inviteResult(token,p,'employee'));
+}
 async function logEvent(db,kind,action,info=''){await db.prepare('INSERT INTO ops_events(id,kind,action,actor_id,detail,created_at) VALUES(?,?,?,?,?,?)').bind(uuid(),kind,action,'',safeText(info,120),now()).run();}
-async function superOverview(db){const day=new Date(Date.now()-86400000).toISOString();const stats=await db.prepare(`SELECT (SELECT count(*) FROM people WHERE role='admin' AND is_superadmin=0) admins,(SELECT count(*) FROM people WHERE role='employee') employees,(SELECT count(*) FROM tasks) tasks,(SELECT count(*) FROM tasks WHERE status='submitted') pending,(SELECT count(*) FROM ops_events WHERE kind='error' AND created_at>?) errors_24h`).bind(day).first();const admins=(await db.prepare("SELECT id,name,email,active,user_id,created_at FROM people WHERE role='admin' AND is_superadmin=0 ORDER BY created_at DESC").all()).results;const events=(await db.prepare('SELECT kind,action,detail,created_at FROM ops_events ORDER BY created_at DESC LIMIT 40').all()).results;return json({stats,admins,events,checked_at:now(),system:{database:'ok',api:'ok'}});}
-async function inviteAdmin(db,req){const b=await readBody(req),name=safeText(b.name,100),email=safeText(b.email,250).toLowerCase();if(!name||!validEmail(email))return fail('Nom et e-mail requis.');if(await db.prepare('SELECT id FROM accounts WHERE email=?').bind(email).first()||await db.prepare('SELECT id FROM people WHERE email=?').bind(email).first())return fail('Adresse déjà utilisée.',409);const code=hex(crypto.getRandomValues(new Uint8Array(16))).toUpperCase();const expires=nowSec()+7*86400;await db.prepare('INSERT INTO admin_invites(id,name,email,code_hash,created_by,expires_at,created_at) VALUES(?,?,?,?,?,?,?)').bind(uuid(),name,email,await digest(code),'owner',expires,now()).run();await logEvent(db,'audit','Invitation administrateur');return json({ok:true,code,email,expires},201);}
+async function superOverview(db){const day=new Date(Date.now()-86400000).toISOString();const stats=await db.prepare(`SELECT (SELECT count(*) FROM people WHERE role='admin' AND is_superadmin=0) admins,(SELECT count(*) FROM people WHERE role='employee') employees,(SELECT count(*) FROM tasks) tasks,(SELECT count(*) FROM tasks WHERE status='submitted') pending,(SELECT count(*) FROM ops_events WHERE kind='error' AND created_at>?) errors_24h`).bind(day).first();const admins=(await db.prepare("SELECT id,name,email,phone,active,user_id,created_at FROM people WHERE role='admin' AND is_superadmin=0 ORDER BY created_at DESC").all()).results;const pendingInvites=(await db.prepare('SELECT id,name,email,phone,expires_at,created_at FROM admin_invites WHERE consumed_at IS NULL AND expires_at>? ORDER BY created_at DESC').bind(nowSec()).all()).results;const events=(await db.prepare('SELECT kind,action,detail,created_at FROM ops_events ORDER BY created_at DESC LIMIT 40').all()).results;return json({stats,admins:admins.map(publicPerson),pendingInvites:pendingInvites.map(publicPerson),events,checked_at:now(),system:{database:'ok',api:'ok'}});}
+async function inviteAdmin(db,req){
+ const b=await readBody(req),name=safeText(b.name,100);
+ if(!name)return fail('Nom du responsable requis.');
+ const contact=contacts(b);const dup=await checkContactsUnique(db,contact);if(dup)return fail(dup,409);
+ const pending=await db.prepare('SELECT id FROM admin_invites WHERE (email=? OR (phone IS NOT NULL AND phone=?)) AND consumed_at IS NULL AND expires_at>?').bind(contact.email,contact.phone||'',nowSec()).first();
+ if(pending)return fail('Une invitation active existe déjà pour ce contact.',409);
+ const token=newToken(),expires=nowSec()+INVITE_DAYS;
+ await db.prepare('INSERT INTO admin_invites(id,name,email,phone,code_hash,created_by,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?)').bind(uuid(),name,contact.email,contact.phone||null,await digest(token),'owner',expires,now()).run();
+ await logEvent(db,'audit','Invitation administrateur');
+ return json(inviteResult(token,{...contact,name},'admin'),201);
+}
+async function reinviteAdmin(db,req){
+ const b=await readBody(req),id=safeText(b.id,100);const invite=await db.prepare('SELECT * FROM admin_invites WHERE id=? AND consumed_at IS NULL').bind(id).first();
+ if(!invite)return fail('Invitation introuvable.',404);
+ const token=newToken();await db.prepare('UPDATE admin_invites SET code_hash=?,expires_at=? WHERE id=? AND consumed_at IS NULL').bind(await digest(token),nowSec()+INVITE_DAYS,id).run();
+ return json(inviteResult(token,invite,'admin'));
+}
 async function toggleAdmin(db,req){const b=await readBody(req);const p=await db.prepare("SELECT user_id FROM people WHERE id=? AND role='admin' AND is_superadmin=0").bind(String(b.id||'')).first();if(!p)return fail('Responsable introuvable.',404);await db.prepare('UPDATE people SET active=?,updated_at=? WHERE id=? AND is_superadmin=0').bind(b.active===true?1:0,now(),String(b.id)).run();if(b.active!==true&&p.user_id)await db.prepare('DELETE FROM sessions WHERE user_id=?').bind(p.user_id).run();await logEvent(db,'audit',b.active===true?'Responsable réactivé':'Responsable désactivé');return json({ok:true});}
 function staticAsset(path){const file=ASSETS[path] || (path==='/'?ASSETS['/index.html']:null);if(!file)return null;const [type,b64]=file;const raw=atob(b64);const bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);return new Response(bytes,{headers:{'Content-Type':type,'Cache-Control':path==='/sw.js'?'no-cache':'public, max-age=60','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; font-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"}});}
 export default { async fetch(request,env){ const url=new URL(request.url);const path=url.pathname;try{
@@ -75,12 +206,14 @@ export default { async fetch(request,env){ const url=new URL(request.url);const 
  if(!env.DB)return fail('Base D1 non configurée.',503);
  if(path==='/api/health' && request.method==='GET'){const v=await env.DB.prepare('SELECT 1 AS ok').first();return json({ok:v?.ok===1,app:'GW Suivi',database:'D1'});}
  if(path==='/api/auth/signup'&&request.method==='POST')return await register(env.DB,request);
+ if(path==='/api/auth/invite/preview'&&request.method==='POST')return await invitePreview(env.DB,request);
  if(path==='/api/auth/login'&&request.method==='POST')return await login(env.DB,request);
  const user=await auth(request,env.DB);if(!user)return fail('Session invalide. Reconnecte-toi.',401);
  if(path==='/api/auth/logout'&&request.method==='POST'){const raw=request.headers.get('authorization').slice(7);await env.DB.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await digest(raw)).run();return json({ok:true});}
  if(path==='/api/snapshot'&&request.method==='GET')return await snapshot(env.DB,user);
- if(path.startsWith('/api/super/')){if(user.role!=='superadmin')return fail('Super administrateur requis.',403);if(path==='/api/super/overview'&&request.method==='GET')return await superOverview(env.DB);if(path==='/api/super/invite'&&request.method==='POST')return await inviteAdmin(env.DB,request);if(path==='/api/super/toggle'&&request.method==='POST')return await toggleAdmin(env.DB,request);return fail('Route inconnue',404);}
+ if(path.startsWith('/api/super/')){if(user.role!=='superadmin')return fail('Super administrateur requis.',403);if(path==='/api/super/overview'&&request.method==='GET')return await superOverview(env.DB);if(path==='/api/super/invite'&&request.method==='POST')return await inviteAdmin(env.DB,request);if(path==='/api/super/reinvite'&&request.method==='POST')return await reinviteAdmin(env.DB,request);if(path==='/api/super/toggle'&&request.method==='POST')return await toggleAdmin(env.DB,request);return fail('Route inconnue',404);}
+ if(path==='/api/people/reinvite'&&request.method==='POST'){if(user.role!=='admin')return fail('Administrateur requis.',403);return await reinviteEmployee(env.DB,request);}
  if(path==='/api/ops'&&request.method==='POST')return await operate(env.DB,user,request);
  return fail('Route inconnue.',404);
- }catch(e){const msg=String(e?.message||e);if(/UNIQUE constraint failed/.test(msg))return fail('Enregistrement déjà existant.',409);if(/constraint|invalid|invalide|Date invalide/i.test(msg))return fail('Vérifie les informations saisies.',400);console.error('GW API error',e);if(path.startsWith('/api/')&&env.DB)await logEvent(env.DB,'error','server_exception',path).catch(()=>{});return fail('Erreur du serveur. Réessaie ou contacte le responsable.',500);}
+ }catch(e){const msg=String(e?.message||e);if(/UNIQUE constraint failed/.test(msg))return fail('Enregistrement déjà existant.',409);if(/constraint|invalid|invalide|Date invalide|numéro de téléphone/i.test(msg))return fail('Vérifie les informations saisies.',400);console.error('GW API error',e);if(path.startsWith('/api/')&&env.DB)await logEvent(env.DB,'error','server_exception',path).catch(()=>{});return fail('Erreur du serveur. Réessaie ou contacte le responsable.',500);}
  }};

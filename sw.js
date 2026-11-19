@@ -1,4 +1,4 @@
-const CACHE = 'gw-suivi-v3-20261119-super';
+const CACHE = 'gw-suivi-v4-20261119-authfix';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));

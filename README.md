@@ -1,44 +1,41 @@
-# GW Suivi — Greatness Winner
+# GW Suivi — Greatness Winner (V1.3)
 
-Application PWA de gestion des employés, tâches, délais et primes de performance.
+Application PWA de gestion des employés, missions, échéances et primes.
 
-## Infrastructure
+## Version de production
 
-- GitHub : code source et versions.
-- Cloudflare Workers : hébergement du site et API sécurisée.
-- Cloudflare D1 : données partagées (comptes, employés, missions, primes).
-- IndexedDB + Service Worker : données affichables et changements mis en file hors connexion.
+- Application : https://gw-suivi.pages.dev
+- Code source : https://github.com/MrXPRONOS/test (branche `main`)
+- Serveur : Cloudflare Pages `_worker.js`, API + front-end statique embarqué
+- Données : base D1 `gw-suivi-production` (binding `DB`), migrations successives non destructives
 
-## Sécurité
+## Création de comptes et partage des accès
 
-- Le premier administrateur se crée avec le code d’activation fourni séparément (jamais commis dans le dépôt).
-- L'administrateur doit créer un employé et partager personnellement le code d’invitation généré. L’employé peut alors créer son accès.
-- Les permissions sont vérifiées côté Worker ; un employé n’a accès qu’à ses missions, ne peut pas définir sa prime ou approuver ses tâches.
-- Prime accordée après validation par l'administrateur et sous réserve du délai de soumission **reçu par le serveur**, ou dérogation explicite.
-- Comptes et sessions protégés par mot de passe PBKDF2 et jetons aléatoires stockés côté serveur sous leur empreinte SHA-256.
+- Trois modes : **e-mail seul**, **numéro WhatsApp seul** (sans boîte Gmail), ou **les deux**.
+- Sur la page « Responsables », seul le Super admin peut inviter un administrateur.
+- Sur la page « Employés », chaque responsable peut ajouter un employé.
+- Dans les deux cas, il faut un nom et au moins un contact.
+- Cloudflare génère un **lien d'activation personnel** valable 7 jours, renouvelable. Le lien comprend un jeton aléatoire dans le fragment `#invite=…` ; seule l'empreinte est stockée dans D1.
+- Après la création, cliquer sur **Envoyer via WhatsApp** ou **Envoyer par e-mail** pour ouvrir une conversation ou un brouillon prérempli. **L'expéditeur doit confirmer l'envoi** dans WhatsApp ou dans son application de messagerie. L'application n'envoie pas automatiquement les messages et ne prétend pas disposer d'une API WhatsApp Business / SMTP configurée.
+- Le destinataire ouvre le lien et définit un mot de passe (12 caractères minimum). L'activation ne fonctionne qu'une fois.
+- La connexion accepte l'e-mail ou le téléphone ; les numéros togolais à 8 chiffres sont interprétés comme +228, sinon renseigner l'indicatif international.
+- Un responsable peut regénérer le lien d'un employé non activé (« Envoyer l’accès »). Le Super admin peut régénérer un lien d'administrateur en attente. Les anciens liens sont invalidés.
 
-## Hors ligne
+## Modèle de données et migration
 
-Après une première ouverture connectée, l’application enregistre le shell PWA et les derniers enregistrements en local. Les opérations hors ligne rejoignent une file persistante, rejouée au retour du réseau. **Limites** : l’effacement des données navigateur supprime ce cache ; les conflits simultanés complexes ne sont pas fusionnés automatiquement ; il ne s’agit ni de preuves d’horodatage certifiées ni de paiements automatiques.
+L'ancienne base D1 avait `email NOT NULL UNIQUE`. Pour conserver les comptes et les clés étrangères existants sans reconstruction destructive, un compte exclusivement téléphonique reçoit une **adresse interne technique non distribuable** (`phone-<num>@gw-suivi.invalid`). Elle n'est **jamais présentée à l'utilisateur** comme une adresse e-mail et n'est **jamais utilisée pour envoyer des messages**. Les coordonnées réelles sont dans `phone` et dans `email` uniquement quand une adresse existe.
 
-## Déploiement Cloudflare
+Migration : `cloudflare/migration-v1.3.sql`. Les nouvelles colonnes `phone`, `invite_code_hash`, `invite_expires_at` et les index d'unicité assurent la coexistence avec les comptes V1.2. Les codes d'invitation historiques continuent d'être acceptés pendant la transition.
 
-La base doit être créée séparément, puis initialisée avec `cloudflare/schema.sql`. Le Worker `cloudflare/worker.js` importe `cloudflare/asset-bundle.js` généré depuis les ressources statiques pour l’envoi direct via API Cloudflare. Le Worker est associé à D1 par un binding nommé `DB`.
+## Sécurité et réserves
 
-Pour un premier déploiement, un code d'activation aléatoire est généré hors du code source ; seule son empreinte est enregistrée dans la table `settings` sous la clé `setup_code_hash`.
+- Validation des rôles et des jetons côté Cloudflare, sessions aléatoires, PBKDF2-SHA256, D1 préparé.
+- Un lien d'activation est un secret : le partager **uniquement à la personne prévue**. La possession du lien permet l'activation ; sans vérification indépendante des coordonnées, une interception du lien est un risque.
+- La livraison effective des messages WhatsApp et e-mail dépend de l'utilisateur, du téléphone et de l'application de messagerie.
+- L'application ne vérifie pas encore la propriété du numéro par OTP, ni celle de l'adresse e-mail par un lien de confirmation indépendant. Une API WhatsApp Business ou un service d'envoi e-mail serait nécessaire pour envoyer de façon totalement automatique.
+- La PWA continue de conserver les tâches hors connexion. **Créer un compte ou un lien exige Internet**, car le secret doit être généré côté serveur.
+- Les réponses API ne sont pas stockées dans le cache Service Worker.
 
-Le déploiement Cloudflare peut être connecté au dépôt GitHub via le tableau de bord pour les mises à jour continues. La version livrée dans le dépôt contient tous les fichiers source, mais pas les identifiants confidentiels ni les mots de passe.
+## Développement et vérification
 
-## Tester
-
-L'application PWA exige HTTP sur `localhost` ou HTTPS sur Internet. Mode production activé dans `config.js`. Le script `TESTS-simulation.cjs` teste le parcours logique de démonstration en simulant un contexte navigateur, sans valider à lui seul la sécurité et la synchronisation serveur.
-
-## V1.2 : Espace Super administrateur
-
-Premier compte : activation propriétaire avec le code initial privé. Il reçoit le rôle `superadmin` et une page de supervision dédiée. Il peut inviter les responsables par des codes à usage unique valables 7 jours, désactiver ou réactiver les accès, voir les erreurs enregistrées par le serveur et consulter l'état de D1. Chaque responsable possède son propre compte `admin` permettant d'organiser employés, missions et primes. Un employé conserve son espace personnel. Toutes les autorisations sont contrôlées dans le Worker (aucun accès Super admin avec un simple changement d'interface). La migration D1 est dans `cloudflare/migration-v1.2.sql`. Le bundle Cloudflare Pages Advanced Mode est généré avec `python3 cloudflare/build-bundle.py`.
-
-## Correctif V1.2.1 : inscription Cloudflare
-
-Cloudflare Workers WebCrypto limite les derivations PBKDF2 a **100 000 iterations par appel**. L'ancienne valeur 160 000 provoquait une erreur serveur pendant l'inscription, et n'avait pas ete detectee par les tests Node locaux. L'inscription utilise desormais PBKDF2-SHA256 avec 100 000 iterations, sel aleatoire unique et mots de passe d'au moins 12 caracteres. Le nombre d'iterations est enregistre avec chaque compte et valide contre la limite du runtime.
-
-Le test `node test-v12.mjs` verifie l'inscription et la valeur sauvegardee dans la base simulee. La base de production n'a besoin d'aucune migration supplementaire ; aucun compte n'existait avant ce correctif.
+Les sources sont `app.js`, `styles.css`, `cloudflare/worker.js`, `cloudflare/schema.sql`, `cloudflare/migration-v1.3.sql`. Reconstruire le Worker embarqué avec `python cloudflare/build-bundle.py`. Tests de parcours : `node test-v13.mjs`; test de la démo locale : `node TESTS-simulation.cjs`.

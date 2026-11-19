@@ -1,4 +1,4 @@
-const CACHE = 'gw-suivi-v3-20261118-security';
+const CACHE = 'gw-suivi-v3-20261119-super';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -14,7 +14,6 @@ self.addEventListener('fetch', event => {
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
-  // API privee: ne jamais mettre en cache les donnees personnelles.
   if (url.pathname.startsWith('/api/')) return;
   if (request.mode === 'navigate') {
     event.respondWith(fetch(request).then(response => {

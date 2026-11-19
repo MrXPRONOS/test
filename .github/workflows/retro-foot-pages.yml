@@ -1,0 +1,36 @@
+name: Deploy RETRO FOOT to GitHub Pages
+on:
+  push:
+    branches:
+      - retro-foot-v1.2-pages
+    paths:
+      - 'docs/**'
+      - '.github/workflows/retro-foot-pages.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: retro-foot-github-pages
+  cancel-in-progress: false
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout RETRO FOOT branch
+        uses: actions/checkout@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - name: Upload HTML site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./docs
+      - name: Publish RETRO FOOT
+        id: deployment
+        uses: actions/deploy-pages@v4

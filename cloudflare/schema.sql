@@ -7,9 +7,12 @@ CREATE TABLE IF NOT EXISTS people (
   user_id TEXT UNIQUE,
   name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 100),
   email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  phone TEXT,
   role TEXT NOT NULL CHECK(role IN ('admin','employee')),
   is_superadmin INTEGER NOT NULL DEFAULT 0 CHECK(is_superadmin IN (0,1)),
   invite_code TEXT,
+  invite_code_hash TEXT,
+  invite_expires_at INTEGER,
   active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -17,6 +20,7 @@ CREATE TABLE IF NOT EXISTS people (
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  phone TEXT,
   password_hash TEXT NOT NULL,
   salt TEXT NOT NULL,
   iterations INTEGER NOT NULL,
@@ -58,7 +62,13 @@ CREATE INDEX IF NOT EXISTS idx_tasks_employee ON tasks(employee_id,due_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_one_super ON people(is_superadmin) WHERE is_superadmin=1;
-CREATE TABLE IF NOT EXISTS admin_invites(id TEXT PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL COLLATE NOCASE,code_hash TEXT NOT NULL,created_by TEXT NOT NULL,expires_at INTEGER NOT NULL,created_at TEXT NOT NULL,consumed_at TEXT);
+CREATE TABLE IF NOT EXISTS admin_invites(id TEXT PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL COLLATE NOCASE,phone TEXT,code_hash TEXT NOT NULL,created_by TEXT NOT NULL,expires_at INTEGER NOT NULL,created_at TEXT NOT NULL,consumed_at TEXT);
 CREATE INDEX IF NOT EXISTS idx_invite_email ON admin_invites(email,code_hash,expires_at);
 CREATE TABLE IF NOT EXISTS ops_events(id TEXT PRIMARY KEY,kind TEXT NOT NULL,action TEXT NOT NULL,actor_id TEXT NOT NULL DEFAULT '',detail TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_events_time ON ops_events(created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_people_phone_unique ON people(phone) WHERE phone IS NOT NULL AND phone<>'';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_phone_unique ON accounts(phone) WHERE phone IS NOT NULL AND phone<>'';
+CREATE INDEX IF NOT EXISTS idx_admin_invite_token ON admin_invites(code_hash,expires_at);
+CREATE INDEX IF NOT EXISTS idx_people_invite_token ON people(invite_code_hash,invite_expires_at);
+CREATE INDEX IF NOT EXISTS idx_admin_invites_phone ON admin_invites(phone,expires_at);
